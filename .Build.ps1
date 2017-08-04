@@ -43,7 +43,7 @@ Exit-BuildTask {
 #>
 Enter-Build {
     Write-Output "The build folder is $env:BuildFolder"
-    
+
     # Optimize timing for AzureRM module to install
     Write-Output "Installing latest AzureRM module as background job"
     $ARM = Start-Job -ScriptBlock {
@@ -52,7 +52,18 @@ Enter-Build {
 
     # Load helper module from test repo
     Import-Module -Name $env:BuildFolder\DscConfiguration.Tests\TestHelper.psm1 -Force
-    
+
+    # Preload NuGet package provider
+    $Nuget = Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.205 -Force
+
+    # Install supporting environment modules from PSGallery
+    Write-Output "Installing modules to support the build environment:`n$EnvironmentModules"
+    $EnvironmentModules = @(
+        'Pester',
+        'PSScriptAnalyzer'
+    )
+    Install-Module -Name $EnvironmentModules -Repository PSGallery -Force
+
     # Fix module path if duplicates exist (TestHelper)
     Invoke-UniquePSModulePath
 
@@ -82,7 +93,7 @@ Add-BuildTask LoadConfigurationScript {
 
     Write-Output "Required Modules:`n$($script:Modules | `
         ForEach-Object -Process {$_.Name})"
-    
+
 }
 
 <#
@@ -92,11 +103,16 @@ Add-BuildTask LintUnitTests {
     $testResultsFile = "$env:BuildFolder\LintUnitTestsResults.xml"
     $Pester = Invoke-Pester -Tag Lint, Unit -OutputFormat NUnitXml -OutputFile `
         $testResultsFile -PassThru
-    
-    (New-Object 'System.Net.WebClient').UploadFile("$env:TestResultsUploadURI", `
-    (Resolve-Path $testResultsFile))
 
-    Push-AppveyorArtifact -Path (Resolve-Path $testResultsFile)
+    if ($env:APPVEYOR -eq $true)
+    {
+        (New-Object 'System.Net.WebClient').UploadFile("$env:TestResultsUploadURI", `
+        (Resolve-Path $testResultsFile))
+
+        Push-AppveyorArtifact -Path (Resolve-Path $testResultsFile)
+    }
+
+    Remove-Item $testResultsFile
 
     if ($Pester.FailedCount -gt 0) {
         throw "Pester returned errors after tests`n$Pester"
@@ -109,7 +125,7 @@ Add-BuildTask LintUnitTests {
 Add-BuildTask AzureLogin {
     Write-Output "Waiting for AzureRM module to finish installing"
     $ARM = Wait-Job -Job $ARM
-    
+
     # Login to Azure using information from params
     Invoke-AzureSPNLogin
 }
@@ -142,7 +158,7 @@ Add-BuildTask AzureAutomationAssets {
         # Import the modules discovered as requirements to Azure Automation (TestHelper)
         foreach ($ImportModule in $Modules) {
             Import-ModuleToAzureAutomation -Module $ImportModule -Verbose
-        }    
+        }
         # Allow module activities to extract before importing configuration (TestHelper)
         foreach ($WaitForModule in $Modules) {
             Wait-ModuleExtraction -Module $WaitForModule
@@ -162,36 +178,37 @@ Add-BuildTask AzureAutomationAssets {
 Add-BuildTask AzureVM {
     $Script:VMDeployments = @()
     Write-Output 'Deploying all test virtual machines in parallel'
-    
-    ForEach ($OSVersion in $Script:Configuration.OSVersions) {
-    
-        If ($null -eq $OSVersion) {
-            Write-Output "No OS version was provided for deployment of $($Script:Configuration.Name)"
+
+    ForEach ($Configuration in $script:Configurations) {
+        ForEach ($OSVersion in $Configuration.WindowsOSVersion) {
+
+            If ($null -eq $OSVersion) {
+                Write-Output "No OS version was provided for deployment of $($Configuration.Name)"
+            }
+            Write-Output "Initiating background deployment of $OSVersion and bootstrapping configuration $($Configuration.Name)"
+
+            $JobName = "$($Configuration.Name).$($OSVersion.replace('-',''))"
+            Write-Host "Starting job $JobName"
+            $Script:VMDeployment = Start-Job -ScriptBlock {
+                param
+                (
+                    [string]$Configuration,
+                    [string]$OSVersion
+                    [securestring]$Password
+                )
+                Import-Module -Name $env:BuildFolder\DscConfiguration.Tests\TestHelper.psm1 -Force
+
+                Invoke-AzureSPNLogin
+
+                New-AzureTestVM -Configuration $Configuration -OSVersion $OSVersion `
+                -Password $Password
+
+            } -ArgumentList @($Script:Configuration.Name, $OSVersion, $script:Password) -Name $JobName
+            $Script:VMDeployments += $Script:VMDeployment
+
+            # pause for provisioning to avoid conflicts (this is a case where slower is faster)
+            Start-Sleep 15
         }
-        Write-Output "Initiating background deployment of $OSVersion and bootstrapping configuration $($Script:Configuration.Name)"
-    
-        $JobName = "$($Script:Configuration.Name).$($OSVersion.replace('-',''))"
-    Write-Host "Starting job $JobName"
-        $Script:VMDeployment = Start-Job -ScriptBlock {
-            param
-            (
-                [string]$Configuration,
-                [string]$OSVersion,
-                [securestring]$Password
-            )
-            #>
-            Import-Module -Name $env:BuildFolder\DscConfiguration.Tests\TestHelper.psm1 -Force
-        
-            Invoke-AzureSPNLogin
-        
-            New-AzureTestVM -Configuration $Configuration -OSVersion $OSVersion `
-            -Password $Password
-
-        } -ArgumentList @($Script:Configuration.Name, $OSVersion, $script:Password) -Name $JobName
-        $Script:VMDeployments += $Script:VMDeployment
-
-        # pause for provisioning to avoid conflicts (this is a case where slower is faster)
-        Start-Sleep 15
     }
 }
 
@@ -208,12 +225,21 @@ Add-BuildTask IntegrationTestAzureAutomationDSC {
     $Pester = Invoke-Pester -Tag AADSCIntegration -OutputFormat NUnitXml `
         -OutputFile $testResultsFile -PassThru
 
-    Write-Host 'Uploading test results to Appveyor'
-    (New-Object 'System.Net.WebClient').UploadFile("$env:TestResultsUploadURI", `
-    (Resolve-Path $testResultsFile))
+    if ($env:APPVEYOR -eq $true)
+    {
+        Write-Host 'Uploading test results to Appveyor'
+        (New-Object 'System.Net.WebClient').UploadFile("$env:TestResultsUploadURI", `
+        (Resolve-Path $testResultsFile))
 
-    Write-Host 'Uploading build artifacts to Appveyor'
-    Push-AppveyorArtifact -Path (Resolve-Path $testResultsFile)
+        Write-Host 'Uploading build artifacts to Appveyor'
+        Push-AppveyorArtifact -Path (Resolve-Path $testResultsFile)
+    }
+    else
+    {
+        Write-Host 'Not running in AppVeyor so will not try to upload test result or artifacts.'
+    }
+
+    Remove-Item $testResultsFile
 
     if ($Pester.FailedCount -gt 0) {
         throw "Pester returned errors after tests`n$Pester"
@@ -227,7 +253,7 @@ Add-BuildTask IntegrationTestAzureVMs {
     Write-Host "Waiting for all nodes to finish deployment"
     ForEach ($VMDeploymentJob in $Script:VMDeployments) {
         $Wait = Wait-Job -Job $VMDeploymentJob
-        
+
         Write-Output `n
         Write-Output "########## Output from $($VMDeploymentJob.Name) ##########"
         Receive-Job -Job $VMDeploymentJob
@@ -242,10 +268,15 @@ Add-BuildTask IntegrationTestAzureVMs {
     $Pester = Invoke-Pester -Tag AzureVMIntegration -OutputFormat NUnitXml `
         -OutputFile $testResultsFile -PassThru
 
-    (New-Object 'System.Net.WebClient').UploadFile("$env:TestResultsUploadURI", `
-    (Resolve-Path $testResultsFile))
+    if ($env:APPVEYOR -eq $true)
+    {
+        (New-Object 'System.Net.WebClient').UploadFile("$env:TestResultsUploadURI", `
+        (Resolve-Path $testResultsFile))
 
-    Push-AppveyorArtifact -Path (Resolve-Path $testResultsFile)
+        Push-AppveyorArtifact -Path (Resolve-Path $testResultsFile)
+    }
+
+    Remove-Item $testResultsFile
 
     if ($Pester.FailedCount -gt 0) {
         throw "Pester returned errors after tests`n$Pester"

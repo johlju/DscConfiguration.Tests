@@ -161,7 +161,7 @@ Describe 'Common Tests - File Parsing' -Tag Lint {
 
     foreach ($ScriptFile in $ScriptFiles)
     {
-        Context $ScriptFile.Name {   
+        Context $ScriptFile.Name {
             It 'Should not contain parse errors' {
                 $containsParseErrors = $false
 
@@ -185,7 +185,7 @@ Describe 'Common Tests - File Parsing' -Tag Lint {
 #>
 Describe 'Common Tests - File Formatting' -Tag Lint {
     $textFiles = Get-TextFilesList -FilePath $env:BuildFolder
-    
+
     Context 'All discovered ext files' {
         It "Should not contain any files with Unicode file encoding" {
             $containsUnicodeFile = $false
@@ -261,12 +261,12 @@ Describe 'Common Tests - File Formatting' -Tag Lint {
                     }
 
                     Write-Warning -Message "$($textFile.FullName) does not end with a new line. Use fixer function 'Add-NewLine'"
-                    
+
                     $containsFileWithoutNewLine = $true
                 }
             }
 
-                    
+
             $containsFileWithoutNewLine | Should Be $false
         }
     }
@@ -322,7 +322,7 @@ Describe 'Common Tests - Configuration Module Requirements' -Tag Unit {
                 }
                 It "$($RequiredModule.ModuleName) version $($RequiredModule.ModuleVersion) should install locally without error" {
                     {Install-Module -Name $RequiredModule.ModuleName -RequiredVersion $RequiredModule.ModuleVersion -Force} | Should Not Throw
-                } 
+                }
             }
             else {
                 It "$RequiredModule should be found in the PowerShell public gallery" {
@@ -371,11 +371,11 @@ Describe 'Common Tests - Azure Automation DSC' -Tag AADSCIntegration {
     $AutomationAccount = "AzureDSC$env:BuildID"
 
     $ScriptFileInfo = Test-ScriptFileInfo -Path "$env:BuildFolder\$env:ProjectName.ps1"
-    
+
     $RequiredModules = $ScriptFileInfo.RequiredModules | ForEach-Object {$_.Name}
 
     . $env:BuildFolder\$env:ProjectName.ps1
-    
+
     $ConfigurationCommands = Get-Command -Type Configuration | `
                              Where-Object {$_.Name -eq $env:ProjectName} | `
                              ForEach-Object {$_.Name}
@@ -419,7 +419,8 @@ Describe 'Common Tests - Azure VM' -Tag AzureVMIntegration {
     . $env:BuildFolder\$env:ProjectName.ps1
     $ConfigurationCommands = Get-Command -Type Configuration | Where-Object {$_.Source -eq ''} | ForEach-Object {$_.Name}
 
-    $OSVersion = (Test-ScriptFileInfo $env:BuildFolder\$env:ProjectName.ps1).PrivateData
+    $ProjectModuleName = -join ($env:ProjectName,'Module')
+    $OSVersion = (Import-PowerShellDataFile $env:BuildFolder\$ProjectModuleName\$ProjectModuleName.psd1).PrivateData.WindowsOSVersion
 
     $Nodes = Get-AzureRMAutomationDSCNode -ResourceGroupName $ResourceGroup -AutomationAccountName $AutomationAccount
     $NodeNames = $Nodes | ForEach-Object {$_.Name}
@@ -431,4 +432,4 @@ Describe 'Common Tests - Azure VM' -Tag AzureVMIntegration {
             }
         }
     }
-}    
+}
