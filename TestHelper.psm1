@@ -2,12 +2,12 @@
     .SYNOPSIS
 
 #>
-function Invoke-UniquePSModulePath 
+function Invoke-UniquePSModulePath
 {
     [CmdletBinding()]
     param
-    () 
-    try 
+    ()
+    try
     {
         Write-Verbose 'Verifying there are no duplicates in PSModulePath'
         # Correct duplicates in environment psmodulepath
@@ -42,7 +42,7 @@ function Get-RequiredGalleryModules
         [switch]$Install
     )
     try {
-        # Load module data and create array of objects containing prerequisite details for use 
+        # Load module data and create array of objects containing prerequisite details for use
         # later in Azure Automation
         $ModulesInformation = @()
         Write-Verbose "The RequiredModules parameter input was of type $($RequiredModules.gettype().Name)"
@@ -50,7 +50,7 @@ function Get-RequiredGalleryModules
         {
             # Placeholder object to store module names and locations
             $ModuleReference = New-Object -TypeName PSObject
-            
+
             # If no version is given, get the latest version
             if ($RequiredModule.gettype().Name -eq 'String')
             {
@@ -107,7 +107,7 @@ function Get-RequiredGalleryModules
         }
         return $ModulesInformation
     }
-    catch [System.Exception] 
+    catch [System.Exception]
     {
         throw "An error occured while getting modules from PowerShellGallery.com`n$Uri`n$($_.exception.message)"
     }
@@ -119,34 +119,64 @@ function Get-RequiredGalleryModules
 #>
 function Invoke-ConfigurationPrep
 {
-param()
-
-    try 
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory=$true)]
+        [string]$Name
+    )
+    try
     {
         # Validate file exists as expected for debug data
         $TestPath = Test-Path "$env:BuildFolder\$env:ProjectName.ps1"
-        
+
         if ($ScriptFileInfo = Test-ScriptFileInfo -Path "$env:BuildFolder\$env:ProjectName.ps1") {
-            
+
             Write-Verbose "capturing information from script in project $env:ProjectName"
-            
+
             # Discover OS versions, or default to Server 2016 Datacenter Edition
             $OSVersions = if ($ScriptFileInfo.PrivateData -ne $null) {
                 $PrivateData = $ScriptFileInfo.PrivateData.replace("'",'').replace('"','')
                 if ($PrivateData.Contains(',')) {
                     $PrivateData.split(',')
-                } 
+                }
                 else {$PrivateData}
             }
             if (!$OSVersions) {$OSversions = '2016-Datacenter'}
-            
+
             Write-Verbose "Identified operating systems $OSVersions"
-            
+
             # Discover list of required modules
             $RequiredModules = $ScriptFileInfo.RequiredModules
-            
+
             Write-Verbose "Identified modules $RequiredModules"
         }
+    }
+    catch [System.Exception]
+    {
+        throw "An error occurred while importing module $Name`n$($_.exception.message)"
+    }
+}
+
+<#
+    .SYNOPSIS
+
+#>
+function Invoke-ConfigurationPrep
+{
+    [CmdletBinding()]
+    param
+    (
+        [Parameter(Mandatory=$true)]
+        [string]$Module,
+        [string]$Path = "$env:TEMP\DSCConfigurationScripts"
+    )
+    try
+    {
+        # Discover OS versions, or default to Server 2016 Datacenter Edition
+        $WindowsOSVersion = if ($ModuleData = `
+        (Get-Module -Name $Module).PrivateData.WindowsOSVersion) {$ModuleData}
+        else {'2016-Datacenter'}
 
         # Get list of configurations
         . $env:BuildFolder\$env:ProjectName.ps1
@@ -163,9 +193,25 @@ param()
         $Configuration | Add-Member -MemberType NoteProperty -Name Location `
         -Value $env:BuildFolder\$env:ProjectName.ps1
 
-        return $Configuration
+        # Create working folder
+        New-Item -Path $Path -ItemType Directory -Force | Out-Null
+
+        # Create a unique script for each configuration, with a name that matches the configuration
+        # this is a safeguard in case multiple configurations are given in a file
+        foreach ($Configuration in $Configurations) {
+            if ($Config = (Get-Command $Configuration).ScriptBlock) {
+                $Configuration.Location = "$Path\$Configuration.ps1"
+                # write a new configuration using the scriptblock loaded from the file
+                "Configuration $Configuration`n{" | Out-File $Configuration.Location
+                $Config | Out-File $Configuration.Location -Append
+                "}`n" | Out-File $Configuration.Location -Append
+            }
+        }
+        Write-Verbose "Prepared configurations:`n$($Configurations | ForEach-Object `
+        -Process {$_.Name})"
+        return $Configurations
     }
-    catch [System.Exception] 
+    catch [System.Exception]
     {
         throw "An error occured while loading configurations.  The error was:`n$($_.exception.message)`nThe result of test-path was $testpath.`nOSVersions: $OSVersions`nConfiguration: $Configuration`nRequired Modules: $RequiredModules`nScriptFileInfo: $ScriptFileInfo"
     }
@@ -185,19 +231,19 @@ function Invoke-AzureSPNLogin
         [string]$ApplicationPassword = $env:ApplicationPassword,
         [string]$TenantID = $env:TenantID
     )
-    try 
+    try
     {
         Write-Verbose "Logging in to Azure"
-        
+
         # Build platform (AppVeyor) does not offer solution for passing secure strings
         $Credential = New-Object -typename System.Management.Automation.PSCredential -argumentlist $ApplicationID, $(convertto-securestring -String $ApplicationPassword -AsPlainText -Force)
-    
+
         # Suppress request to share usage information
         $Path = "$Home\AppData\Roaming\Windows Azure Powershell\"
         if (!(Test-Path -Path $Path)) {
             $AzPSProfile = New-Item -Path $Path -ItemType Directory
         }
-        $AzProfileContent = Set-Content -Value '{"enableAzureDataCollection":true}' -Path (Join-Path $Path 'AzureDataCollectionProfile.json') 
+        $AzProfileContent = Set-Content -Value '{"enableAzureDataCollection":true}' -Path (Join-Path $Path 'AzureDataCollectionProfile.json')
 
         # Handle login
         $AddAccount = Add-AzureRmAccount -ServicePrincipal -SubscriptionID $SubscriptionID -TenantID $TenantID -Credential $Credential -ErrorAction SilentlyContinue
@@ -229,7 +275,7 @@ function New-ResourceGroupandAutomationAccount
         [string]$AutomationAccountName = "AzureDSC$env:BuildID",
         [securestring]$Password
     )
-    try 
+    try
     {
         # Default the location to 'EastUS2' if not passed
         If ([String]::IsNullOrEmpty($Location))
@@ -291,7 +337,7 @@ function New-ResourceGroupandAutomationAccount
 #>
 function Import-ModuleToAzureAutomation
 {
-    [CmdletBinding()]     
+    [CmdletBinding()]
     param
     (
         [Parameter(Mandatory=$true)]
@@ -325,7 +371,7 @@ function Import-ModuleToAzureAutomation
 #>
 function Wait-ModuleExtraction
 {
-    [CmdletBinding()]     
+    [CmdletBinding()]
     param
     (
         [Parameter(Mandatory=$true)]
@@ -342,11 +388,11 @@ function Wait-ModuleExtraction
                 Start-Sleep -Seconds 5
         }
     }
-    catch [System.Exception] 
+    catch [System.Exception]
     {
-        throw "An error occured while waiting for module $($Module.Name) activities to extract in Azure Automation`n$($_.exception.message)"        
+        throw "An error occured while waiting for module $($Module.Name) activities to extract in Azure Automation`n$($_.exception.message)"
     }
-}    
+}
 
 <#
     .SYNOPSIS
@@ -356,13 +402,13 @@ function Import-ConfigurationToAzureAutomation
 {
     [CmdletBinding()]
     param
-    (   
+    (
         [Parameter(Mandatory=$true)]
         [array]$Configuration,
         [string]$ResourceGroupName = "ContosoDev-Test$env:BuildID",
         [string]$AutomationAccountName = "AzureDSC$env:BuildID"
     )
-    try 
+    try
     {
         Write-Verbose "Importing configuration $($Configuration.Name) to Azure Automation"
         # Import Configuration to Azure Automation DSC
@@ -390,9 +436,9 @@ function Import-ConfigurationToAzureAutomation
         }
         $Compile = Start-AzureRmAutomationDscCompilationJob @CompileParams
     }
-    catch [System.Exception] 
+    catch [System.Exception]
     {
-        throw "An error occured while importing the configuration $(Configuration.Name) using Azure Automation`n$($_.exception.message)"        
+        throw "An error occured while importing the configuration $($Configuration.Name) using Azure Automation`n$($_.exception.message)"
     }
 }
 
@@ -402,7 +448,7 @@ function Import-ConfigurationToAzureAutomation
 #>
 function Wait-ConfigurationCompilation
 {
-    [CmdletBinding()]     
+    [CmdletBinding()]
     param
     (
         [Parameter(Mandatory=$true)]
@@ -410,16 +456,16 @@ function Wait-ConfigurationCompilation
         [string]$ResourceGroupName = "ContosoDev-Test$env:BuildID",
         [string]$AutomationAccountName = "AzureDSC$env:BuildID"
     )
-    try 
+    try
     {
         while (@('Completed','Suspended') -notcontains (Get-AzureRmAutomationDscCompilationJob -ResourceGroupName $ResourceGroupName `
         -AutomationAccountName $AutomationAccountName -Name $Configuration.Name).Status) {
             Start-Sleep -Seconds 5
-        }   
+        }
     }
-    catch [System.Exception] 
+    catch [System.Exception]
     {
-        throw "An error occured while waiting for configuration $($Configuration.Name) to compile in Azure Automation`n$($_.exception.message)"        
+        throw "An error occured while waiting for configuration $($Configuration.Name) to compile in Azure Automation`n$($_.exception.message)"
     }
 }
 
@@ -479,7 +525,7 @@ function New-RandomPassword
 #>
 function New-AzureTestVM
 {
-    [CmdletBinding()]     
+    [CmdletBinding()]
     param
     (
         [Parameter(Mandatory=$true)]
@@ -488,7 +534,7 @@ function New-AzureTestVM
         [string]$OSVersion,
         [securestring]$Password
     )
-    try 
+    try
     {
         # Retrieve Azure Automation DSC registration information
         $Account = Get-AzureRMAutomationAccount -ResourceGroupName "ContosoDev-Test$env:BuildID" `
@@ -549,9 +595,9 @@ function New-AzureTestVM
             Write-Error $Message
         }
     }
-        catch [System.Exception] 
+        catch [System.Exception]
         {
-        throw "An error occured during the Azure deployment.`n$($_.exception.message)"        
+        throw "An error occured during the Azure deployment.`n$($_.exception.message)"
     }
 }
 
@@ -561,13 +607,13 @@ function New-AzureTestVM
 #>
 function Wait-NodeCompliance
 {
-    [CmdletBinding()]     
+    [CmdletBinding()]
     param
     (
         [string]$ResourceGroupName = "ContosoDev-Test$env:BuildID",
         [string]$AutomationAccountName = "AzureDSC$env:BuildID"
     )
-    try 
+    try
     {
         $Nodes = Get-AzureRMAutomationDSCNode -ResourceGroupName $ResourceGroupName `
         -AutomationAccountName $AutomationAccountName
@@ -584,9 +630,9 @@ function Wait-NodeCompliance
         }
         Write-Verbose "Node state for $($Node.Name) is $Status)"
     }
-    catch [System.Exception] 
+    catch [System.Exception]
     {
-        throw "An error occured while waiting nodes to report compliance status in Azure Automation`n$($_.exception.message)"        
+        throw "An error occured while waiting nodes to report compliance status in Azure Automation`n$($_.exception.message)"
     }
 }
 
@@ -731,7 +777,7 @@ function Get-SuppressedPSSARuleNameList
 function Get-PSCredentialTypeParameters
 {
 param(
-    [Parameter(Mandatory = $true)]    
+    [Parameter(Mandatory = $true)]
     [string]
     $CmdletName
 )
